@@ -1,0 +1,25 @@
+# Mean-Variance Optimal Delta-Hedging of Short Strangles on Bitcoin Futures Options
+# HKUST IEDA3330 Introduction to Financial Engineering - Fall 2025
+# Prof. Wei JIANG
+
+# Core data manipulation
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Optimization
+cvxpy>=1.4.0
+
+# Financial data
+yfinance>=0.2.31
+
+# Visualization
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# Optional: Crypto exchange API (for Deribit data if needed)
+ccxt>=4.0.0
+
+# Utilities
+scipy>=1.10.0
+requests>=2.28.0
+
