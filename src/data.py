@@ -22,6 +22,8 @@ import yfinance as yf
 from datetime import datetime, timedelta
 from scipy.stats import mstats
 import warnings
+import requests
+import os
 
 warnings.filterwarnings('ignore')
 
@@ -205,12 +207,94 @@ def simulate_futures_from_spot(spot_df: pd.DataFrame) -> pd.DataFrame:
 # DVOL (DERIBIT VOLATILITY INDEX)
 # ============================================================================
 
+def download_dvol_csv(save_path: str = None) -> bool:
+    """
+    Download DVOL data from online source.
+    
+    Parameters
+    ----------
+    save_path : str, optional
+        Path to save the CSV file. Defaults to 'data/Deribit_BTC_DVOL_daily.csv'
+    
+    Returns
+    -------
+    bool
+        True if download successful, False otherwise
+    
+    Notes
+    -----
+    Sources tried:
+    1. satochi.co/csv - Provides BTC volatility data
+    2. Alternative: Manual download from cryptodatadownload.com
+    
+    The CSV should have columns: Date, dvol (or similar)
+    """
+    if save_path is None:
+        # Create data directory if it doesn't exist
+        os.makedirs("data", exist_ok=True)
+        save_path = "data/Deribit_BTC_DVOL_daily.csv"
+    
+    print(f"Attempting to download DVOL data...")
+    
+    # Try satochi.co API
+    try:
+        url = "https://satochi.co/csv"
+        response = requests.get(url, timeout=10)
+        if response.status_code == 200:
+            # Save raw CSV
+            with open(save_path, 'wb') as f:
+                f.write(response.content)
+            print(f"  -> Downloaded DVOL data from satochi.co")
+            
+            # Try to parse and reformat if needed
+            try:
+                df = pd.read_csv(save_path)
+                # Check format and reformat if needed
+                # satochi.co format: date, price, logprice, return, volatility, volatility60
+                if 'volatility' in df.columns.str.lower().values:
+                    # Reformat to our expected format
+                    df_formatted = pd.DataFrame()
+                    # Use 'date' column, convert to Date
+                    if 'date' in df.columns.str.lower().values:
+                        date_col = [c for c in df.columns if c.lower() == 'date'][0]
+                        df_formatted['Date'] = pd.to_datetime(df[date_col])
+                    else:
+                        # Try first column as date
+                        df_formatted['Date'] = pd.to_datetime(df.iloc[:, 0])
+                    
+                    # Use 'volatility' column, multiply by 100 to convert to percentage
+                    vol_col = [c for c in df.columns if 'volatility' in c.lower()][0]
+                    df_formatted['dvol'] = df[vol_col] * 100  # Convert to percentage
+                    
+                    # Save reformatted version
+                    df_formatted.to_csv(save_path, index=False)
+                    print(f"  -> Reformatted CSV (volatility -> dvol, converted to percentage)")
+                    return True
+                elif 'Date' in df.columns and 'dvol' in df.columns:
+                    # Already in correct format
+                    return True
+                else:
+                    print(f"  -> Warning: CSV format may need manual adjustment")
+                    print(f"  -> Columns found: {list(df.columns)}")
+                    return True
+            except Exception as e:
+                print(f"  -> Warning: Downloaded but parsing failed: {e}")
+                return False
+    except Exception as e:
+        print(f"  -> Download failed: {e}")
+        return False
+    
+    return False
+
+
 def fetch_dvol(start_date: str = "2022-01-01",
-               end_date: str = None) -> pd.DataFrame:
+               end_date: str = None,
+               auto_download: bool = True) -> pd.DataFrame:
     """
     Load DVOL (Deribit BTC Volatility Index) data.
     
-    Attempts to load from local CSV first, then simulates if unavailable.
+    Attempts to load from local CSV first, downloads if auto_download=True,
+    then simulates if unavailable.
     
     Parameters
     ----------
@@ -218,6 +302,8 @@ def fetch_dvol(start_date: str = "2022-01-01",
         Start date in 'YYYY-MM-DD' format
     end_date : str, optional
         End date in 'YYYY-MM-DD' format
+    auto_download : bool
+        Whether to attempt automatic download if CSV not found
     
     Returns
     -------
@@ -229,24 +315,64 @@ def fetch_dvol(start_date: str = "2022-01-01",
     DVOL is Deribit's implied volatility index for BTC options,
     similar to VIX for S&P 500. It represents 30-day expected volatility.
     Historical range: ~40% to ~150%+ during stress periods.
+    
+    CSV Format Expected:
+    - Column 'Date' (or 'date') with dates
+    - Column 'dvol' (or 'DVOL', 'volatility') with volatility values
     """
     if end_date is None:
         end_date = datetime.now().strftime("%Y-%m-%d")
     
     print(f"Loading DVOL data from {start_date} to {end_date}...")
     
+    # Use data folder for CSV storage
+    os.makedirs("data", exist_ok=True)
+    csv_path = "data/Deribit_BTC_DVOL_daily.csv"
+    
     # Try loading from local file
-    try:
-        dvol_df = pd.read_csv("Deribit_BTC_DVOL_daily.csv", parse_dates=['Date'])
-        dvol_df.set_index('Date', inplace=True)
-        dvol_df = dvol_df.loc[start_date:end_date]
-        if len(dvol_df) > 100:
-            print(f"  -> Loaded {len(dvol_df)} DVOL observations from CSV")
-            return dvol_df[['dvol']]
-    except FileNotFoundError:
-        pass
-    except Exception as e:
-        print(f"  -> CSV load failed: {e}")
+    if os.path.exists(csv_path):
+        try:
+            dvol_df = pd.read_csv(csv_path, parse_dates=['Date'])
+            dvol_df.set_index('Date', inplace=True)
+            dvol_df = dvol_df.loc[start_date:end_date]
+            if len(dvol_df) > 100:
+                print(f"  -> Loaded {len(dvol_df)} DVOL observations from CSV")
+                return dvol_df[['dvol']]
+        except KeyError:
+            # Try alternative column names
+            try:
+                dvol_df = pd.read_csv(csv_path, parse_dates=True, index_col=0)
+                # Look for dvol column (case insensitive)
+                dvol_col = None
+                for col in dvol_df.columns:
+                    if 'dvol' in col.lower() or 'volatility' in col.lower():
+                        dvol_col = col
+                        break
+                if dvol_col:
+                    dvol_df = dvol_df.rename(columns={dvol_col: 'dvol'})
+                    dvol_df = dvol_df.loc[start_date:end_date]
+                    if len(dvol_df) > 100:
+                        print(f"  -> Loaded {len(dvol_df)} DVOL observations from CSV")
+                        return dvol_df[['dvol']]
+            except Exception as e:
+                print(f"  -> CSV format error: {e}")
+        except Exception as e:
+            print(f"  -> CSV load failed: {e}")
+    
+    # Try automatic download if enabled and file doesn't exist
+    if auto_download and not os.path.exists(csv_path):
+        print("  -> CSV file not found, attempting automatic download...")
+        if download_dvol_csv(csv_path):
+            # Retry loading after download
+            try:
+                dvol_df = pd.read_csv(csv_path, parse_dates=['Date'])
+                dvol_df.set_index('Date', inplace=True)
+                dvol_df = dvol_df.loc[start_date:end_date]
+                if len(dvol_df) > 100:
+                    print(f"  -> Loaded {len(dvol_df)} DVOL observations from downloaded CSV")
+                    return dvol_df[['dvol']]
+            except Exception as e:
+                print(f"  -> Failed to parse downloaded CSV: {e}")
     
     # Simulate DVOL if not available
     print("  -> Simulating DVOL (no local data found)")
@@ -438,7 +564,8 @@ def clean_data(df: pd.DataFrame, winsor_pct: float = WINSOR_PERCENTILE) -> pd.Da
 # ============================================================================
 
 def load_all_data(start_date: str = "2022-01-01",
-                  end_date: str = None) -> pd.DataFrame:
+                  end_date: str = None,
+                  auto_download_dvol: bool = True) -> pd.DataFrame:
     """
     Load and combine all required data for the backtesting engine.
     
@@ -477,12 +604,18 @@ def load_all_data(start_date: str = "2022-01-01",
     # 2. BTC Futures
     futures_df = fetch_btc_futures(start_date, end_date)
     if futures_df is None or len(futures_df) < len(spot_df) * 0.5:
+        print(f"  -> Insufficient futures data ({len(futures_df) if futures_df is not None else 0} < {len(spot_df) * 0.5:.0f}), using simulation")
         futures_df = simulate_futures_from_spot(spot_df)
+    else:
+        print(f"  -> Using yfinance futures data ({len(futures_df)} observations, {len(futures_df)/len(spot_df)*100:.1f}% coverage)")
     
     # 3. DVOL
-    dvol_df = fetch_dvol(start_date, end_date)
+    dvol_df = fetch_dvol(start_date, end_date, auto_download=auto_download_dvol)
     if dvol_df is None:
+        print("  -> No DVOL CSV found, using simulation")
         dvol_df = simulate_dvol(spot_df)
+    else:
+        print(f"  -> Using DVOL data from CSV ({len(dvol_df)} observations)")
     
     # 4. Strangle Delta
     delta_df = simulate_strangle_delta(spot_df)
