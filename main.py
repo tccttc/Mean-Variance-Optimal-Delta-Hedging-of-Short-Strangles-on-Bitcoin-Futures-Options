@@ -250,20 +250,60 @@ def generate_visualizations(engine):
     # Create output directory
     os.makedirs(CONFIG['output_dir'], exist_ok=True)
     
-    # For TrainValTestEngine, we need to create a BacktestEngine for plotting
-    # Run a quick backtest on test data with tuned parameters for visualization
+    # For TrainValTestEngine, create a BacktestEngine wrapper using test results
     print("Generating plots for test period...")
     
+    # Create a BacktestEngine-like object from test results
     viz_engine = BacktestEngine(
         start_date=CONFIG['test_start'],
         end_date=CONFIG['test_end'],
         notional=CONFIG['notional']
     )
     viz_engine.load_data()
-    viz_engine.run_backtest(init_periods=CONFIG['init_periods'])
     
-    # Generate all plots using test data
-    generate_all_plots(viz_engine, output_dir=CONFIG['output_dir'])
+    # Use the test P&L and weights from TrainValTestEngine
+    if hasattr(engine, 'test_pnl') and engine.test_pnl is not None:
+        # Create pnl_history in the format expected by plots
+        pnl_history = pd.DataFrame(index=engine.test_pnl.index)
+        
+        # P&L columns (both naming conventions for compatibility)
+        pnl_history['m1_pnl'] = engine.test_pnl['m1_pnl']
+        pnl_history['m2_pnl'] = engine.test_pnl['m2_pnl']
+        pnl_history['m3_pnl'] = engine.test_pnl['m3_pnl']
+        pnl_history['pnl_m1'] = engine.test_pnl['m1_pnl']  # Alias for plots
+        pnl_history['pnl_m2'] = engine.test_pnl['m2_pnl']  # Alias for plots
+        pnl_history['pnl_m3'] = engine.test_pnl['m3_pnl']  # Alias for plots
+        
+        # Daily returns (for rolling volatility plot)
+        pnl_history['ret_m1'] = pnl_history['m1_pnl'] / CONFIG['notional']
+        pnl_history['ret_m2'] = pnl_history['m2_pnl'] / CONFIG['notional']
+        pnl_history['ret_m3'] = pnl_history['m3_pnl'] / CONFIG['notional']
+        
+        # Calculate cumulative P&L
+        pnl_history['cum_m1'] = pnl_history['m1_pnl'].cumsum()
+        pnl_history['cum_m2'] = pnl_history['m2_pnl'].cumsum()
+        pnl_history['cum_m3'] = pnl_history['m3_pnl'].cumsum()
+        
+        # Legacy compatibility
+        pnl_history['cum_unhedged'] = pnl_history['cum_m1']  # Use M1 as proxy
+        pnl_history['cum_naive_hedged'] = pnl_history['cum_m1']
+        pnl_history['cum_mv_hedged'] = pnl_history['cum_m3']
+        
+        viz_engine.pnl_history = pnl_history
+        viz_engine.weights_history = engine.test_weights if hasattr(engine, 'test_weights') else None
+        
+        # Override get_summary_table to use test results
+        def get_test_summary_table():
+            return engine.get_test_metrics_table()
+        viz_engine.get_summary_table = get_test_summary_table
+        
+        # Generate all plots using test data
+        generate_all_plots(viz_engine, output_dir=CONFIG['output_dir'])
+    else:
+        # Fallback: run backtest with default parameters
+        print("Warning: Using default parameters for visualization (not tuned)")
+        viz_engine.run_backtest(init_periods=CONFIG['init_periods'])
+        generate_all_plots(viz_engine, output_dir=CONFIG['output_dir'])
     
     # Generate efficient frontier using test data
     print("Generating efficient frontier...")

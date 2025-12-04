@@ -1080,6 +1080,70 @@ class TrainValTestEngine:
         
         return pd.DataFrame(data)
     
+    def get_test_metrics_table(self) -> pd.DataFrame:
+        """
+        Get metrics table in format expected by plot_metrics_comparison.
+        
+        Returns test period metrics formatted like BacktestEngine.get_summary_table().
+        """
+        if not self.test_results:
+            return pd.DataFrame()
+        
+        tr = self.test_results
+        
+        # Calculate additional metrics from P&L if available
+        def calc_win_rate(pnl_series):
+            if pnl_series is None or len(pnl_series.dropna()) == 0:
+                return 0.0
+            return (pnl_series.dropna() > 0).mean()
+        
+        def calc_var(pnl_series, confidence=0.95):
+            if pnl_series is None or len(pnl_series.dropna()) == 0:
+                return 0.0
+            return -np.percentile(pnl_series.dropna(), (1 - confidence) * 100) / self.notional
+        
+        pnl_df = tr.get('pnl_df')
+        m1_pnl = pnl_df['m1_pnl'] if pnl_df is not None else None
+        m2_pnl = pnl_df['m2_pnl'] if pnl_df is not None else None
+        m3_pnl = pnl_df['m3_pnl'] if pnl_df is not None else None
+        
+        summary = pd.DataFrame({
+            'Metric': [
+                'Annualized Return',
+                'Annualized Volatility',
+                'Sharpe Ratio',
+                'Max Drawdown',
+                '95% VaR',
+                'Win Rate'
+            ],
+            'M1: Delta Hedge': [
+                f"{tr.get('return_m1', 0):.2%}",
+                f"{tr.get('vol_m1', 0):.2%}",
+                f"{tr.get('sharpe_m1', 0):.2f}",
+                f"{tr.get('max_dd_m1', 0):.2%}",
+                f"{calc_var(m1_pnl, 0.95):.4f}",
+                f"{calc_win_rate(m1_pnl):.2%}"
+            ],
+            'M2: EWMA Hedge': [
+                f"{tr.get('return_m2', 0):.2%}",
+                f"{tr.get('vol_m2', 0):.2%}",
+                f"{tr.get('sharpe_m2', 0):.2f}",
+                f"{tr.get('max_dd_m2', 0):.2%}",
+                f"{calc_var(m2_pnl, 0.95):.4f}",
+                f"{calc_win_rate(m2_pnl):.2%}"
+            ],
+            'M3: MV Optimal': [
+                f"{tr.get('return_m3', 0):.2%}",
+                f"{tr.get('vol_m3', 0):.2%}",
+                f"{tr.get('sharpe_m3', 0):.2f}",
+                f"{tr.get('max_dd_m3', 0):.2%}",
+                f"{calc_var(m3_pnl, 0.95):.4f}",
+                f"{calc_win_rate(m3_pnl):.2%}"
+            ]
+        })
+        
+        return summary
+    
     def get_tuning_results(self) -> pd.DataFrame:
         """Get hyperparameter tuning results."""
         return pd.DataFrame(self.tuning_results)
