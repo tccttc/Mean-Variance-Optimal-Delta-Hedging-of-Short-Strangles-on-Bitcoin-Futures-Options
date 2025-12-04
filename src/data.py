@@ -52,9 +52,12 @@ DEFAULT_NET_DELTA = -0.05
 # ============================================================================
 
 def fetch_btc_spot(start_date: str = "2022-01-01", 
-                   end_date: str = None) -> pd.DataFrame:
+                   end_date: str = None,
+                   use_cache: bool = True) -> pd.DataFrame:
     """
     Fetch BTC-USD daily close prices from yfinance.
+    
+    Checks for cached CSV file first, downloads if not found or outdated.
     
     Parameters
     ----------
@@ -62,6 +65,8 @@ def fetch_btc_spot(start_date: str = "2022-01-01",
         Start date in 'YYYY-MM-DD' format
     end_date : str, optional
         End date in 'YYYY-MM-DD' format. Defaults to today.
+    use_cache : bool
+        Whether to use cached CSV file if available (default: True)
     
     Returns
     -------
@@ -76,8 +81,42 @@ def fetch_btc_spot(start_date: str = "2022-01-01",
     if end_date is None:
         end_date = datetime.now().strftime("%Y-%m-%d")
     
-    print(f"Fetching BTC-USD spot data from {start_date} to {end_date}...")
+    # Use data folder for CSV storage
+    os.makedirs("data", exist_ok=True)
+    csv_path = "data/BTC_USD_spot.csv"
     
+    print(f"Loading BTC-USD spot data from {start_date} to {end_date}...")
+    
+    # Try loading from cached CSV
+    if use_cache and os.path.exists(csv_path):
+        try:
+            spot_df = pd.read_csv(csv_path, parse_dates=['Date'], index_col='Date')
+            # Check if cached data covers the requested range (with some tolerance)
+            cached_start = pd.Timestamp(spot_df.index.min())
+            cached_end = pd.Timestamp(spot_df.index.max())
+            request_start = pd.Timestamp(start_date)
+            request_end = pd.Timestamp(end_date)
+            
+            # Use cached data if it covers at least 90% of the requested range
+            date_range_days = (request_end - request_start).days
+            
+            if cached_start <= request_start and cached_end >= request_end:
+                # Perfect coverage - use cached data
+                spot_df = spot_df.loc[start_date:end_date]
+                print(f"  -> Loaded {len(spot_df)} observations from cached CSV")
+                return spot_df
+            elif cached_start <= request_start and cached_end >= request_start + pd.Timedelta(days=date_range_days * 0.9):
+                # Covers at least 90% - use cached data
+                spot_df = spot_df.loc[start_date:min(end_date, cached_end.strftime('%Y-%m-%d'))]
+                print(f"  -> Loaded {len(spot_df)} observations from cached CSV (covers {len(spot_df)/date_range_days*100:.1f}% of requested range)")
+                return spot_df
+            else:
+                print(f"  -> Cached data incomplete (cached: {cached_start.date()} to {cached_end.date()}), fetching from yfinance...")
+        except Exception as e:
+            print(f"  -> CSV load failed: {e}, fetching from yfinance...")
+    
+    # Fetch from yfinance
+    print(f"  -> Fetching from yfinance...")
     btc = yf.download("BTC-USD", start=start_date, end=end_date, progress=False)
     
     # Handle MultiIndex columns from yfinance
@@ -90,6 +129,14 @@ def fetch_btc_spot(start_date: str = "2022-01-01",
     
     spot_df.index.name = 'Date'
     
+    # Save to CSV for future use
+    if use_cache:
+        try:
+            spot_df.to_csv(csv_path)
+            print(f"  -> Saved {len(spot_df)} observations to {csv_path}")
+        except Exception as e:
+            print(f"  -> Warning: Failed to save CSV: {e}")
+    
     print(f"  -> Retrieved {len(spot_df)} daily observations")
     return spot_df
 
@@ -99,10 +146,12 @@ def fetch_btc_spot(start_date: str = "2022-01-01",
 # ============================================================================
 
 def fetch_btc_futures(start_date: str = "2022-01-01",
-                      end_date: str = None) -> pd.DataFrame:
+                      end_date: str = None,
+                      use_cache: bool = True) -> pd.DataFrame:
     """
     Fetch BTC futures data from yfinance (BTC=F - CME Bitcoin Futures).
     
+    Checks for cached CSV file first, downloads if not found or outdated.
     If data is unavailable or sparse, simulate futures from spot + basis.
     
     Parameters
@@ -111,11 +160,13 @@ def fetch_btc_futures(start_date: str = "2022-01-01",
         Start date in 'YYYY-MM-DD' format
     end_date : str, optional
         End date in 'YYYY-MM-DD' format
+    use_cache : bool
+        Whether to use cached CSV file if available (default: True)
     
     Returns
     -------
     pd.DataFrame
-        DataFrame with 'Date' index and 'futures' column
+        DataFrame with 'Date' index and 'futures' column, or None if simulation needed
     
     Notes
     -----
@@ -126,9 +177,53 @@ def fetch_btc_futures(start_date: str = "2022-01-01",
     if end_date is None:
         end_date = datetime.now().strftime("%Y-%m-%d")
     
-    print(f"Fetching BTC futures data from {start_date} to {end_date}...")
+    # Use data folder for CSV storage
+    os.makedirs("data", exist_ok=True)
+    csv_path = "data/BTC_F_futures.csv"
     
+    print(f"Loading BTC futures data from {start_date} to {end_date}...")
+    
+    # Try loading from cached CSV
+    if use_cache and os.path.exists(csv_path):
+        try:
+            futures_df = pd.read_csv(csv_path, parse_dates=['Date'], index_col='Date')
+            # Check if cached data covers the requested range
+            cached_start = futures_df.index.min()
+            cached_end = futures_df.index.max()
+            request_start = pd.Timestamp(start_date)
+            request_end = pd.Timestamp(end_date)
+            
+            # Use cached data if it covers at least 90% of the requested range
+            cached_start = pd.Timestamp(futures_df.index.min())
+            cached_end = pd.Timestamp(futures_df.index.max())
+            request_start = pd.Timestamp(start_date)
+            request_end = pd.Timestamp(end_date)
+            date_range_days = (request_end - request_start).days
+            
+            if cached_start <= request_start and cached_end >= request_end:
+                # Perfect coverage - use cached data
+                futures_df = futures_df.loc[start_date:end_date]
+                if len(futures_df) > 100:  # Sufficient data
+                    print(f"  -> Loaded {len(futures_df)} observations from cached CSV")
+                    return futures_df
+                else:
+                    print(f"  -> Cached data insufficient ({len(futures_df)} obs), fetching from yfinance...")
+            elif cached_start <= request_start and cached_end >= request_start + pd.Timedelta(days=date_range_days * 0.9):
+                # Covers at least 90% - use cached data
+                futures_df = futures_df.loc[start_date:min(end_date, cached_end.strftime('%Y-%m-%d'))]
+                if len(futures_df) > 100:  # Sufficient data
+                    print(f"  -> Loaded {len(futures_df)} observations from cached CSV (covers {len(futures_df)/date_range_days*100:.1f}% of requested range)")
+                    return futures_df
+                else:
+                    print(f"  -> Cached data insufficient ({len(futures_df)} obs), fetching from yfinance...")
+            else:
+                print(f"  -> Cached data incomplete (cached: {cached_start.date()} to {cached_end.date()}), fetching from yfinance...")
+        except Exception as e:
+            print(f"  -> CSV load failed: {e}, fetching from yfinance...")
+    
+    # Fetch from yfinance
     try:
+        print(f"  -> Fetching from yfinance...")
         futures = yf.download("BTC=F", start=start_date, end=end_date, progress=False)
         
         if isinstance(futures.columns, pd.MultiIndex):
@@ -139,6 +234,15 @@ def fetch_btc_futures(start_date: str = "2022-01-01",
                 'futures': futures['Close'].values.flatten()
             }, index=futures.index)
             futures_df.index.name = 'Date'
+            
+            # Save to CSV for future use
+            if use_cache:
+                try:
+                    futures_df.to_csv(csv_path)
+                    print(f"  -> Saved {len(futures_df)} observations to {csv_path}")
+                except Exception as e:
+                    print(f"  -> Warning: Failed to save CSV: {e}")
+            
             print(f"  -> Retrieved {len(futures_df)} futures observations from yfinance")
             return futures_df
     except Exception as e:
