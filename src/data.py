@@ -758,4 +758,5 @@ if __name__ == "__main__":
     print(df.head())
     print("\nLast 5 rows:")
     print(df.tail())
+    df.to_csv("data/Full_data.csv")
 
